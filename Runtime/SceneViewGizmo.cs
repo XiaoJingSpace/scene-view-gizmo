@@ -48,7 +48,7 @@ namespace SceneViewGizmoKit
         [Tooltip("要跟随并控制的相机。留空时使用同一物体上的 Camera，否则使用主相机。")]
         [SerializeField] Camera _targetCamera;
         [Tooltip("绕转中心。留空时，对齐会绕相机前方的一点转动。")]
-        [SerializeField] Transform _pivot;
+        public Transform _pivot;
         [Tooltip("勾选后，点击坐标轴会直接转动目标相机。")]
         [SerializeField] bool _controlCamera = true;
         [SerializeField] SceneViewGizmoAlignMode _alignMode = SceneViewGizmoAlignMode.Orbit;
