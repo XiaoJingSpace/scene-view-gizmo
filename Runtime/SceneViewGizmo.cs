@@ -76,6 +76,14 @@ namespace SceneViewGizmoKit
         [SerializeField] Color _hoveredColor = new Color(246f / 255f, 242f / 255f, 50f / 255f, 1f);
         [SerializeField] bool _showProjectionLabel = true;
 
+        [Header("地面网格")]
+        [Tooltip("在目标相机画面里绘制 XZ 地面网格。平面盖住相机视锥，格子按到网格平面的距离在 10 倍尺寸之间淡入淡出。")]
+        public bool _drawGrid;
+        [Tooltip("网格原点。平面经过这个点，格子线按这个点对齐，默认是世界原点。")]
+        public Vector3 _gridOrigin;
+        [SerializeField, Min(0.01f)] float _gridCellSize = 1f;
+        [SerializeField] Color _gridLineColor = new Color(128f / 255f, 128f / 255f, 128f / 255f, 102f / 255f);
+
         struct GizmoDraw
         {
             public Mesh Mesh;
@@ -100,7 +108,9 @@ namespace SceneViewGizmoKit
         GameObject _rig;
         Camera _gizmoCamera;
         Material _material;
+        Material _gridMaterial;
         Material _blitMaterial;
+        static Mesh _gridQuad;
         RenderTexture _modelTexture;
         MaterialPropertyBlock _colorBlock;
         Camera _boundCamera;
@@ -251,6 +261,30 @@ namespace SceneViewGizmoKit
             set { _showProjectionLabel = value; }
         }
 
+        public virtual bool DrawGrid
+        {
+            get { return _drawGrid; }
+            set { _drawGrid = value; }
+        }
+
+        public virtual Vector3 GridOrigin
+        {
+            get { return _gridOrigin; }
+            set { _gridOrigin = value; }
+        }
+
+        public virtual float GridCellSize
+        {
+            get { return _gridCellSize; }
+            set { _gridCellSize = Mathf.Max(0.01f, value); }
+        }
+
+        public virtual Color GridLineColor
+        {
+            get { return _gridLineColor; }
+            set { _gridLineColor = value; }
+        }
+
         public event Action<Vector3> AxisClicked;
         public event Action ProjectionClicked;
 
@@ -383,6 +417,8 @@ namespace SceneViewGizmoKit
         {
             if (_material != null)
                 Destroy(_material);
+            if (_gridMaterial != null)
+                Destroy(_gridMaterial);
             if (_blitMaterial != null)
                 Destroy(_blitMaterial);
             ReleaseModelTexture();
@@ -434,6 +470,7 @@ namespace SceneViewGizmoKit
 
         public virtual void OnRenderObject()
         {
+            DrawGroundGrid();
             if (_gizmoCamera == null || Camera.current != _gizmoCamera || _material == null)
                 return;
 
@@ -457,6 +494,235 @@ namespace SceneViewGizmoKit
                 GL.Flush();
                 CompositeModel();
             }
+        }
+
+        public virtual void DrawGroundGrid()
+        {
+            if (!Application.isPlaying || !DrawGrid)
+                return;
+
+            Camera camera = Camera.current;
+            Camera target = _boundCamera != null ? _boundCamera : ResolveCamera();
+            if (camera == null || target == null || camera != target || camera == _gizmoCamera)
+                return;
+
+            if (_gridMaterial == null)
+                _gridMaterial = CreateGridMaterial();
+            if (_gridMaterial == null)
+                return;
+
+            Matrix4x4 matrix = GridPlaneMatrix(camera);
+            if (matrix.GetColumn(0).magnitude < 1e-4f || matrix.GetColumn(2).magnitude < 1e-4f)
+                return;
+
+            float zoom = Mathf.Abs(new Plane(Vector3.up, GridOrigin).GetDistanceToPoint(camera.transform.position));
+            int digits = GridZoomDigits((int)Mathf.Clamp(zoom, 0f, 1000000f));
+            float cellScale0 = Mathf.Pow(10f, digits - 1);
+            float cellScale1 = Mathf.Pow(10f, digits);
+            float span = cellScale1 - cellScale0;
+            if (span <= 0f || float.IsInfinity(cellScale0) || float.IsInfinity(cellScale1))
+                return;
+
+            float alpha0 = (cellScale1 - zoom) / span;
+            _gridMaterial.SetFloat("_CamFarPlaneDist", camera.farClipPlane);
+            _gridMaterial.SetVector("_CamWorldPos", camera.transform.position);
+
+            Mesh quad = GridQuad();
+            float cell = GridCellSize;
+            SubmitGridPass(quad, matrix, cell * cellScale0, GridLineColor.a * alpha0);
+            SubmitGridPass(quad, matrix, cell * cellScale1, GridLineColor.a * (1f - alpha0));
+        }
+
+        public virtual void SubmitGridPass(Mesh quad, Matrix4x4 matrix, float cellSize, float alpha)
+        {
+            if (alpha == 0f || quad == null || _gridMaterial == null || cellSize <= 0f)
+                return;
+
+            Vector3 center = matrix.GetColumn(3);
+            double ox = (center.x - GridOrigin.x) / cellSize;
+            double oz = (center.z - GridOrigin.z) / cellSize;
+            _gridMaterial.SetVector("_GridScale", new Vector4(matrix.GetColumn(0).magnitude, matrix.GetColumn(2).magnitude, 0f, 0f));
+            _gridMaterial.SetVector("_GridFrac", new Vector4((float)(ox - Math.Floor(ox)), (float)(oz - Math.Floor(oz)), 0f, 0f));
+            Color color = GridLineColor;
+            color.a = alpha;
+            _gridMaterial.SetFloat("_CellSizeX", cellSize);
+            _gridMaterial.SetFloat("_CellSizeZ", cellSize);
+            _gridMaterial.SetColor("_LineColor", color);
+            if (_gridMaterial.SetPass(0))
+                Graphics.DrawMeshNow(quad, matrix);
+        }
+
+        public virtual int GridZoomDigits(int number)
+        {
+            return number == 0 ? 1 : Mathf.FloorToInt(Mathf.Log10(Mathf.Abs(number)) + 1f);
+        }
+
+        public virtual Matrix4x4 GridPlaneMatrix(Camera camera)
+        {
+            if (!TryGroundFootprint(camera, out Vector3 min, out Vector3 max))
+                return Matrix4x4.zero;
+
+            float pad = Mathf.Max(GridCellSize * 2f, 0.5f);
+            min.x -= pad;
+            min.z -= pad;
+            max.x += pad;
+            max.z += pad;
+            Vector3 center = (min + max) * 0.5f;
+            center.y = GridOrigin.y;
+            Vector3 size = max - min;
+            const float maxSize = 20000f;
+            Vector3 anchor = camera.transform.position;
+            center.x = ClampGridSpan(center.x, anchor.x, min.x, max.x, size.x, maxSize);
+            center.z = ClampGridSpan(center.z, anchor.z, min.z, max.z, size.z, maxSize);
+            size.x = Mathf.Clamp(size.x, 1e-3f, maxSize);
+            size.y = 1f;
+            size.z = Mathf.Clamp(size.z, 1e-3f, maxSize);
+            if (!IsFiniteVector(center) || !IsFiniteVector(size))
+                return Matrix4x4.zero;
+
+            return Matrix4x4.TRS(center, Quaternion.identity, size);
+        }
+
+        public virtual float ClampGridSpan(float center, float anchor, float min, float max, float size, float maxSize)
+        {
+            if (size <= maxSize)
+                return center;
+
+            float half = maxSize * 0.5f;
+            float low = min + half;
+            float high = max - half;
+            if (low > high)
+                return center;
+
+            return Mathf.Clamp(Mathf.Clamp(anchor, min, max), low, high);
+        }
+
+        public virtual bool TryGroundFootprint(Camera camera, out Vector3 min, out Vector3 max)
+        {
+            min = new Vector3(float.MaxValue, GridOrigin.y, float.MaxValue);
+            max = new Vector3(float.MinValue, GridOrigin.y, float.MinValue);
+            if (camera == null)
+                return false;
+
+            int count = 0;
+            var corners = new Vector3[8];
+            for (int i = 0; i < corners.Length; i++)
+            {
+                corners[i] = FrustumCorner(camera, i);
+                if (!IsFiniteVector(corners[i]))
+                    return false;
+                if (Mathf.Abs(corners[i].y - GridOrigin.y) <= 0.01f)
+                    EncapsulateGridPoint(new Vector3(corners[i].x, GridOrigin.y, corners[i].z), ref min, ref max, ref count);
+            }
+
+            AddGroundEdge(corners[0], corners[1], ref min, ref max, ref count);
+            AddGroundEdge(corners[1], corners[2], ref min, ref max, ref count);
+            AddGroundEdge(corners[2], corners[3], ref min, ref max, ref count);
+            AddGroundEdge(corners[3], corners[0], ref min, ref max, ref count);
+            AddGroundEdge(corners[4], corners[5], ref min, ref max, ref count);
+            AddGroundEdge(corners[5], corners[6], ref min, ref max, ref count);
+            AddGroundEdge(corners[6], corners[7], ref min, ref max, ref count);
+            AddGroundEdge(corners[7], corners[4], ref min, ref max, ref count);
+            AddGroundEdge(corners[0], corners[4], ref min, ref max, ref count);
+            AddGroundEdge(corners[1], corners[5], ref min, ref max, ref count);
+            AddGroundEdge(corners[2], corners[6], ref min, ref max, ref count);
+            AddGroundEdge(corners[3], corners[7], ref min, ref max, ref count);
+            return count >= 2 && IsFiniteVector(min) && IsFiniteVector(max);
+        }
+
+        public virtual Vector3 FrustumCorner(Camera camera, int index)
+        {
+            Transform xform = camera.transform;
+            bool far = index >= 4;
+            int side = index & 3;
+            float sx = side == 0 || side == 3 ? -1f : 1f;
+            float sy = side < 2 ? -1f : 1f;
+            float dist = far ? camera.farClipPlane : Mathf.Max(camera.nearClipPlane, 0.01f);
+            float halfH;
+            float halfW;
+            if (camera.orthographic)
+            {
+                halfH = camera.orthographicSize;
+                halfW = halfH * camera.aspect;
+            }
+            else
+            {
+                halfH = dist * Mathf.Tan(Mathf.Clamp(camera.fieldOfView, 1f, 179f) * 0.5f * Mathf.Deg2Rad);
+                halfW = halfH * camera.aspect;
+            }
+
+            return xform.position + xform.forward * dist + xform.right * (sx * halfW) + xform.up * (sy * halfH);
+        }
+
+        public virtual void AddGroundEdge(Vector3 a, Vector3 b, ref Vector3 min, ref Vector3 max, ref int count)
+        {
+            float da = a.y - GridOrigin.y;
+            float db = b.y - GridOrigin.y;
+            if (da * db >= 0f)
+                return;
+
+            float t = da / (da - db);
+            Vector3 point = a + (b - a) * t;
+            EncapsulateGridPoint(new Vector3(point.x, GridOrigin.y, point.z), ref min, ref max, ref count);
+        }
+
+        public virtual void EncapsulateGridPoint(Vector3 point, ref Vector3 min, ref Vector3 max, ref int count)
+        {
+            min = Vector3.Min(min, point);
+            max = Vector3.Max(max, point);
+            count++;
+        }
+
+        public virtual bool IsFiniteVector(Vector3 value)
+        {
+            return !float.IsNaN(value.x) && !float.IsInfinity(value.x)
+                && !float.IsNaN(value.y) && !float.IsInfinity(value.y)
+                && !float.IsNaN(value.z) && !float.IsInfinity(value.z);
+        }
+
+        public virtual Material CreateGridMaterial()
+        {
+            Material source = Resources.Load<Material>("SceneViewGizmoGrid");
+            Material material = null;
+            if (source != null)
+                material = new Material(source);
+            else
+            {
+                Shader shader = Shader.Find("Hidden/SceneViewGizmo/Grid");
+                if (shader == null)
+                    shader = Resources.Load<Shader>("SceneViewGizmoGrid");
+                if (shader != null)
+                    material = new Material(shader);
+            }
+
+            if (material == null)
+            {
+                Debug.LogError("Scene View Gizmo 找不到地面网格材质 SceneViewGizmoGrid。", this);
+                return null;
+            }
+
+            material.hideFlags = HideFlags.HideAndDontSave;
+            return material;
+        }
+
+        static Mesh GridQuad()
+        {
+            if (_gridQuad != null)
+                return _gridQuad;
+
+            _gridQuad = new Mesh();
+            _gridQuad.name = "Scene View Grid Quad";
+            _gridQuad.hideFlags = HideFlags.HideAndDontSave;
+            _gridQuad.vertices = new[]
+            {
+                new Vector3(-0.5f, 0f, -0.5f),
+                new Vector3(-0.5f, 0f, 0.5f),
+                new Vector3(0.5f, 0f, 0.5f),
+                new Vector3(0.5f, 0f, -0.5f)
+            };
+            _gridQuad.SetTriangles(new[] { 0, 1, 2, 2, 3, 0 }, 0);
+            _gridQuad.UploadMeshData(false);
+            return _gridQuad;
         }
 
         public virtual void OnGUI()
