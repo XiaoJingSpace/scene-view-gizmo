@@ -3,21 +3,6 @@ using UnityEngine;
 
 namespace SceneViewGizmoKit
 {
-    [CustomPropertyDrawer(typeof(SceneViewGizmoLayerAttribute))]
-    public class SceneViewGizmoLayerDrawer : PropertyDrawer
-    {
-        public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
-        {
-            if (property.propertyType != SerializedPropertyType.Integer)
-            {
-                EditorGUI.PropertyField(position, property, label);
-                return;
-            }
-
-            property.intValue = EditorGUI.LayerField(position, label, property.intValue);
-        }
-    }
-
     [CustomEditor(typeof(SceneViewGizmo))]
     public class SceneViewGizmoEditor : UnityEditor.Editor
     {

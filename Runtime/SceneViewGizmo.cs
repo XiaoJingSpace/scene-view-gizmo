@@ -21,10 +21,6 @@ namespace SceneViewGizmoKit
         InPlace
     }
 
-    public sealed class SceneViewGizmoLayerAttribute : PropertyAttribute
-    {
-    }
-
     /// <summary>
     /// 画面角落的视角坐标轴。点击轴对齐相机，点击中心或 Persp/Ortho 切换投影。
     /// </summary>
@@ -64,9 +60,8 @@ namespace SceneViewGizmoKit
         [Header("位置")]
         [Tooltip("相机渲染到 RenderTexture 时，指定显示这块纹理的界面，一般是 RawImage。坐标轴画进纹理，文字和点击跟这块区域对齐。留空则直接画在屏幕上。")]
         public RectTransform _display;
-        [Tooltip("生成的坐标轴模型所在 Layer。")]
-        [SceneViewGizmoLayer]
-        public int _modelLayer;
+        [Tooltip("生成的坐标轴相机的 Culling Mask，和普通相机的 LayerMask 一样。默认 Nothing，只绘制坐标轴本身。勾选 Layer 后，坐标轴画在第一个勾选的 Layer 上，这台相机只渲染这些 Layer。")]
+        public LayerMask _cullingMask;
         [SerializeField] SceneViewGizmoCorner _corner = SceneViewGizmoCorner.TopRight;
         [SerializeField, Min(48f)] float _screenSize = 108f;
         [Tooltip("相对所选角落的屏幕偏移，单位像素。Y 向上为正。")]
@@ -89,7 +84,7 @@ namespace SceneViewGizmoKit
             public float Depth;
         }
 
-        struct CameraPose
+        public struct CameraPose
         {
             public Vector3 Position;
             public Quaternion Rotation;
@@ -105,6 +100,7 @@ namespace SceneViewGizmoKit
         GameObject _rig;
         Camera _gizmoCamera;
         Material _material;
+        MaterialPropertyBlock _colorBlock;
         Camera _boundCamera;
         bool _warnedMissingCamera;
         bool _warnedMissingMaterial;
@@ -145,7 +141,7 @@ namespace SceneViewGizmoKit
         PointerEventData _uiPointer;
         readonly List<RaycastResult> _uiHits = new List<RaycastResult>(8);
 
-        public Camera TargetCamera
+        public virtual Camera TargetCamera
         {
             get { return _targetCamera; }
             set { _targetCamera = value; }
@@ -157,10 +153,28 @@ namespace SceneViewGizmoKit
             set { _pivot = value; }
         }
 
-        public bool ControlCamera
+        public virtual bool ControlCamera
         {
             get { return _controlCamera; }
             set { _controlCamera = value; }
+        }
+
+        public virtual SceneViewGizmoAlignMode AlignMode
+        {
+            get { return _alignMode; }
+            set { _alignMode = value; }
+        }
+
+        public virtual float OrbitDistance
+        {
+            get { return _orbitDistance; }
+            set { _orbitDistance = value; }
+        }
+
+        public virtual float AlignDuration
+        {
+            get { return _alignDuration; }
+            set { _alignDuration = value; }
         }
 
         public virtual RectTransform Display
@@ -169,10 +183,76 @@ namespace SceneViewGizmoKit
             set { _display = value; }
         }
 
+        public virtual LayerMask CullingMask
+        {
+            get { return _cullingMask; }
+            set { _cullingMask = value; }
+        }
+
+        public virtual SceneViewGizmoCorner Corner
+        {
+            get { return _corner; }
+            set { _corner = value; }
+        }
+
+        public virtual float ScreenSize
+        {
+            get { return _screenSize; }
+            set { _screenSize = value; }
+        }
+
+        public virtual Vector2 ScreenOffset
+        {
+            get { return _screenOffset; }
+            set { _screenOffset = value; }
+        }
+
+        public virtual Color PositiveX
+        {
+            get { return _positiveX; }
+            set { _positiveX = value; }
+        }
+
+        public virtual Color PositiveY
+        {
+            get { return _positiveY; }
+            set { _positiveY = value; }
+        }
+
+        public virtual Color PositiveZ
+        {
+            get { return _positiveZ; }
+            set { _positiveZ = value; }
+        }
+
+        public virtual Color NegativeAxis
+        {
+            get { return _negativeAxis; }
+            set { _negativeAxis = value; }
+        }
+
+        public virtual Color CenterColor
+        {
+            get { return _centerColor; }
+            set { _centerColor = value; }
+        }
+
+        public virtual Color HoveredColor
+        {
+            get { return _hoveredColor; }
+            set { _hoveredColor = value; }
+        }
+
+        public virtual bool ShowProjectionLabel
+        {
+            get { return _showProjectionLabel; }
+            set { _showProjectionLabel = value; }
+        }
+
         public event Action<Vector3> AxisClicked;
         public event Action ProjectionClicked;
 
-        public void AlignTo(Vector3 worldAxis)
+        public virtual void AlignTo(Vector3 worldAxis)
         {
             if (worldAxis.sqrMagnitude < 1e-8f)
                 return;
@@ -180,7 +260,7 @@ namespace SceneViewGizmoKit
             Vector3 axis = worldAxis.normalized;
             if (AxisClicked != null)
                 AxisClicked(axis);
-            if (!_controlCamera)
+            if (!ControlCamera)
                 return;
 
             Camera camera = ResolveCamera();
@@ -192,12 +272,12 @@ namespace SceneViewGizmoKit
 
             Quaternion targetRotation = RotationLookingAlong(camera.transform, -axis);
             Vector3 targetPosition = camera.transform.position;
-            if (_alignMode == SceneViewGizmoAlignMode.Orbit)
+            if (AlignMode == SceneViewGizmoAlignMode.Orbit)
             {
                 Vector3 pivot = PivotPoint(camera);
                 float distance = Vector3.Distance(camera.transform.position, pivot);
                 if (distance < 0.01f)
-                    distance = Mathf.Max(0.01f, _orbitDistance);
+                    distance = Mathf.Max(0.01f, OrbitDistance);
                 targetPosition = pivot - targetRotation * Vector3.forward * distance;
             }
 
@@ -207,16 +287,16 @@ namespace SceneViewGizmoKit
             _alignFromPosition = camera.transform.position;
             _alignToPosition = targetPosition;
             _alignT = 0f;
-            _aligning = _alignDuration > 0f;
+            _aligning = AlignDuration > 0f;
             if (!_aligning)
                 ApplyAlign(1f);
         }
 
-        public void ToggleProjection()
+        public virtual void ToggleProjection()
         {
             if (ProjectionClicked != null)
                 ProjectionClicked();
-            if (!_controlCamera)
+            if (!ControlCamera)
                 return;
 
             Camera camera = ResolveCamera();
@@ -233,14 +313,14 @@ namespace SceneViewGizmoKit
 
             float distance = Pivot != null
                 ? Vector3.Distance(camera.transform.position, Pivot.position)
-                : Mathf.Max(0.01f, _orbitDistance);
+                : Mathf.Max(0.01f, OrbitDistance);
             camera.orthographicSize = Mathf.Max(0.01f, distance * Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad));
             camera.orthographic = true;
         }
 
-        public void RestorePreviousView()
+        public virtual void RestorePreviousView()
         {
-            if (!_hasPrevious || !_controlCamera)
+            if (!_hasPrevious || !ControlCamera)
                 return;
 
             Camera camera = ResolveCamera();
@@ -256,7 +336,7 @@ namespace SceneViewGizmoKit
         /// <summary>
         /// 屏幕点是否落在坐标轴或底部投影标签上。坐标原点在左下角。
         /// </summary>
-        public bool ContainsScreenPoint(Vector2 screenPosition)
+        public virtual bool ContainsScreenPoint(Vector2 screenPosition)
         {
             if (_gizmoCamera == null || !_gizmoCamera.enabled || _gizmoViewRect.width < 1f)
                 return false;
@@ -273,7 +353,7 @@ namespace SceneViewGizmoKit
             return pixel.Contains(view);
         }
 
-        void Awake()
+        public virtual void Awake()
         {
             for (int i = 0; i < _axisAlpha.Length; i++)
             {
@@ -282,7 +362,7 @@ namespace SceneViewGizmoKit
             }
         }
 
-        void OnEnable()
+        public virtual void OnEnable()
         {
             if (!Application.isPlaying)
                 return;
@@ -291,13 +371,13 @@ namespace SceneViewGizmoKit
             _material = CreateMaterial();
         }
 
-        void OnDisable()
+        public virtual void OnDisable()
         {
             if (_gizmoCamera != null)
                 _gizmoCamera.enabled = false;
         }
 
-        void OnDestroy()
+        public virtual void OnDestroy()
         {
             if (_material != null)
                 Destroy(_material);
@@ -307,7 +387,7 @@ namespace SceneViewGizmoKit
                 Destroy(_labelRoot.gameObject);
         }
 
-        void LateUpdate()
+        public virtual void LateUpdate()
         {
             if (!Application.isPlaying)
                 return;
@@ -343,12 +423,13 @@ namespace SceneViewGizmoKit
 
             UpdateAxisFade(target);
             RebuildDraws();
+            SubmitMaskedModel();
             UpdateUiLabels();
         }
 
-        void OnRenderObject()
+        public virtual void OnRenderObject()
         {
-            if (_gizmoCamera == null || Camera.current != _gizmoCamera || _material == null)
+            if (CullingMask.value != 0 || _gizmoCamera == null || Camera.current != _gizmoCamera || _material == null)
                 return;
 
             for (int i = 0; i < _draws.Count; i++)
@@ -363,7 +444,7 @@ namespace SceneViewGizmoKit
             }
         }
 
-        void OnGUI()
+        public virtual void OnGUI()
         {
             if (!Application.isPlaying || _displayActive || _gizmoCamera == null || !_gizmoCamera.enabled || _boundCamera == null)
                 return;
@@ -377,7 +458,7 @@ namespace SceneViewGizmoKit
             DrawLabels(pointer, backRect, modeRect);
         }
 
-        bool PollPointer()
+        public virtual bool PollPointer()
         {
             Pointer pointer = Pointer.current;
             if (pointer == null)
@@ -402,7 +483,7 @@ namespace SceneViewGizmoKit
             return acted;
         }
 
-        void EnsureRig()
+        public virtual void EnsureRig()
         {
             if (_rig != null)
                 return;
@@ -412,13 +493,12 @@ namespace SceneViewGizmoKit
             _rig.transform.SetParent(transform, false);
             _gizmoCamera = _rig.AddComponent<Camera>();
             _gizmoCamera.enabled = false;
-            ApplyModelLayer();
         }
 
-        bool SyncRig(Camera target)
+        public virtual bool SyncRig(Camera target)
         {
             _gizmoCamera.clearFlags = CameraClearFlags.Depth;
-            _gizmoCamera.cullingMask = 0;
+            _gizmoCamera.cullingMask = CullingMask.value;
             _gizmoCamera.renderingPath = RenderingPath.Forward;
             _gizmoCamera.allowHDR = target.allowHDR;
             _gizmoCamera.allowMSAA = target.allowMSAA;
@@ -429,7 +509,6 @@ namespace SceneViewGizmoKit
             _gizmoCamera.stereoTargetEye = StereoTargetEyeMask.None;
             _gizmoCamera.targetTexture = target.targetTexture;
             _gizmoCamera.targetDisplay = target.targetDisplay;
-            ApplyModelLayer();
             _gizmoCamera.depth = target.depth + 1f;
             _gizmoCamera.nearClipPlane = 0.05f;
             _gizmoCamera.farClipPlane = 50f;
@@ -462,7 +541,7 @@ namespace SceneViewGizmoKit
             return true;
         }
 
-        void AdvanceAlign(Camera target)
+        public virtual void AdvanceAlign(Camera target)
         {
             if (!_aligning)
                 return;
@@ -472,13 +551,13 @@ namespace SceneViewGizmoKit
                 return;
             }
 
-            _alignT += Time.deltaTime / Mathf.Max(0.0001f, _alignDuration);
+            _alignT += Time.deltaTime / Mathf.Max(0.0001f, AlignDuration);
             ApplyAlign(Smooth01(_alignT));
             if (_alignT >= 1f)
                 _aligning = false;
         }
 
-        void ApplyAlign(float t)
+        public virtual void ApplyAlign(float t)
         {
             if (_alignCamera == null)
                 return;
@@ -488,7 +567,7 @@ namespace SceneViewGizmoKit
             xform.position = Vector3.Lerp(_alignFromPosition, _alignToPosition, t);
         }
 
-        void UpdateAxisFade(Camera target)
+        public virtual void UpdateAxisFade(Camera target)
         {
             Vector3 forward = target.transform.forward;
             float step = SceneViewGizmoGeometry.FadeDuration <= 0f
@@ -507,21 +586,21 @@ namespace SceneViewGizmoKit
             }
         }
 
-        void RebuildDraws()
+        public virtual void RebuildDraws()
         {
             _draws.Clear();
             if (_gizmoCamera == null)
                 return;
 
             Matrix4x4 center = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, Vector3.one * SceneViewGizmoGeometry.CubeSize);
-            AddDraw(SceneViewGizmoGeometry.Cube, center, _hoveredPart == CenterPart ? _hoveredColor : _centerColor, Vector3.zero);
+            AddDraw(SceneViewGizmoGeometry.Cube, center, _hoveredPart == CenterPart ? HoveredColor : CenterColor, Vector3.zero);
 
             for (int i = 0; i < Axes.Length; i++)
             {
                 if (_axisAlpha[i] < VisibleAlpha)
                     continue;
 
-                Color color = i == _hoveredPart ? _hoveredColor : AxisColor(i);
+                Color color = i == _hoveredPart ? HoveredColor : AxisColor(i);
                 color.a *= _axisAlpha[i];
                 Matrix4x4 matrix = AxisMatrix(Axes[i]);
                 Vector3 midPoint = matrix.MultiplyPoint(new Vector3(0f, 0.5f, 0f));
@@ -542,7 +621,7 @@ namespace SceneViewGizmoKit
             }
         }
 
-        void AddDraw(Mesh mesh, Matrix4x4 matrix, Color color, Vector3 worldPoint)
+        public virtual void AddDraw(Mesh mesh, Matrix4x4 matrix, Color color, Vector3 worldPoint)
         {
             float depth = Vector3.Dot(worldPoint - _gizmoCamera.transform.position, _gizmoCamera.transform.forward);
             _draws.Add(new GizmoDraw
@@ -554,15 +633,15 @@ namespace SceneViewGizmoKit
             });
         }
 
-        bool TryHandleClick(Vector2 guiPosition, Rect backRect, Rect modeRect)
+        public virtual bool TryHandleClick(Vector2 guiPosition, Rect backRect, Rect modeRect)
         {
-            if (_showProjectionLabel && backRect.Contains(guiPosition))
+            if (ShowProjectionLabel && backRect.Contains(guiPosition))
             {
                 RestorePreviousView();
                 return true;
             }
 
-            if (_showProjectionLabel && modeRect.Contains(guiPosition))
+            if (ShowProjectionLabel && modeRect.Contains(guiPosition))
             {
                 ToggleProjection();
                 return true;
@@ -578,7 +657,7 @@ namespace SceneViewGizmoKit
             return true;
         }
 
-        int Pick(Vector2 viewPosition)
+        public virtual int Pick(Vector2 viewPosition)
         {
             Rect pixel = _gizmoViewRect;
             if (pixel.width < 1f || pixel.height < 1f)
@@ -627,7 +706,7 @@ namespace SceneViewGizmoKit
             return bestPart;
         }
 
-        void DrawLabels(Vector2 viewPointer, Rect backRect, Rect modeRect)
+        public virtual void DrawLabels(Vector2 viewPointer, Rect backRect, Rect modeRect)
         {
             Matrix4x4 guiMatrix = GUI.matrix;
             Color guiColor = GUI.color;
@@ -646,13 +725,13 @@ namespace SceneViewGizmoKit
                 DrawText(rect, AxisLabels[i], _axisStyle, color);
             }
 
-            if (_showProjectionLabel)
+            if (ShowProjectionLabel)
             {
                 bool backHovered = backRect.Contains(viewPointer);
                 bool modeHovered = modeRect.Contains(viewPointer);
                 Color backColor = _hasPrevious ? new Color(1f, 1f, 1f, 0.92f) : new Color(1f, 1f, 1f, 0.28f);
                 if (backHovered && _hasPrevious)
-                    backColor = _hoveredColor;
+                    backColor = HoveredColor;
                 Color modeColor = modeHovered ? Color.white : new Color(1f, 1f, 1f, 0.8f);
                 DrawText(ViewRectToGui(backRect), "<", _projectionStyle, backColor);
                 string mode = _boundCamera.orthographic ? "Ortho" : "Persp";
@@ -663,11 +742,11 @@ namespace SceneViewGizmoKit
             GUI.matrix = guiMatrix;
         }
 
-        void LayoutProjection(out Rect backRect, out Rect modeRect)
+        public virtual void LayoutProjection(out Rect backRect, out Rect modeRect)
         {
             backRect = new Rect();
             modeRect = new Rect();
-            if (!_showProjectionLabel)
+            if (!ShowProjectionLabel)
                 return;
 
             Rect pixel = _gizmoViewRect;
@@ -684,16 +763,16 @@ namespace SceneViewGizmoKit
             modeRect = new Rect(x + backWidth + gap, y, modeSize.x, modeSize.y);
         }
 
-        Rect GizmoPixelRect(Rect view)
+        public virtual Rect GizmoPixelRect(Rect view)
         {
-            float size = Mathf.Clamp(_screenSize, 48f, 512f) * _viewScale * _viewPerScreen;
+            float size = Mathf.Clamp(ScreenSize, 48f, 512f) * _viewScale * _viewPerScreen;
             size = Mathf.Min(size, Mathf.Min(view.width, view.height) * 0.85f);
-            Vector2 offset = _screenOffset * _viewScale * _viewPerScreen;
-            bool bottom = _corner == SceneViewGizmoCorner.BottomLeft || _corner == SceneViewGizmoCorner.BottomRight;
+            Vector2 offset = ScreenOffset * _viewScale * _viewPerScreen;
+            bool bottom = Corner == SceneViewGizmoCorner.BottomLeft || Corner == SceneViewGizmoCorner.BottomRight;
             float lift = bottom ? LabelHeight() * _viewPerScreen : 0f;
             float x;
             float y;
-            switch (_corner)
+            switch (Corner)
             {
                 case SceneViewGizmoCorner.TopLeft:
                     x = view.xMin + offset.x;
@@ -718,7 +797,7 @@ namespace SceneViewGizmoKit
             return new Rect(x, y, size, size);
         }
 
-        void PrepareDisplay(Camera target)
+        public virtual void PrepareDisplay(Camera target)
         {
             RenderTexture texture = target.targetTexture;
             RectTransform display = Display;
@@ -753,7 +832,7 @@ namespace SceneViewGizmoKit
             _viewScale = ViewScale(display);
         }
 
-        static float ViewScale(RectTransform display)
+        public virtual float ViewScale(RectTransform display)
         {
             Canvas canvas = display.GetComponentInParent<Canvas>();
             Transform root = canvas != null && canvas.rootCanvas != null ? canvas.rootCanvas.transform : null;
@@ -763,22 +842,44 @@ namespace SceneViewGizmoKit
             return Mathf.Max(0.01f, DominantScale(display.lossyScale) / canvasScale);
         }
 
-        static float DominantScale(Vector3 scale)
+        public virtual float DominantScale(Vector3 scale)
         {
             return Mathf.Max(0.0001f, Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y)));
         }
 
-        void ApplyModelLayer()
+        public virtual void SubmitMaskedModel()
         {
-            if (_rig == null)
+            if (CullingMask.value == 0 || _gizmoCamera == null || !_gizmoCamera.enabled || _material == null)
                 return;
 
-            int layer = Mathf.Clamp(_modelLayer, 0, 31);
-            if (_rig.layer != layer)
-                _rig.layer = layer;
+            if (_colorBlock == null)
+                _colorBlock = new MaterialPropertyBlock();
+
+            int layer = FirstLayer(CullingMask);
+            for (int i = 0; i < _draws.Count; i++)
+            {
+                GizmoDraw draw = _draws[i];
+                if (draw.Mesh == null)
+                    continue;
+
+                _colorBlock.SetColor("_Color", draw.Color);
+                Graphics.DrawMesh(draw.Mesh, draw.Matrix, _material, layer, _gizmoCamera, 0, _colorBlock);
+            }
         }
 
-        void ApplyGizmoViewport(Camera target)
+        public virtual int FirstLayer(LayerMask mask)
+        {
+            int bits = mask.value;
+            for (int layer = 0; layer < 32; layer++)
+            {
+                if ((bits & (1 << layer)) != 0)
+                    return layer;
+            }
+
+            return 0;
+        }
+
+        public virtual void ApplyGizmoViewport(Camera target)
         {
             if (target.targetTexture != null)
             {
@@ -795,7 +896,7 @@ namespace SceneViewGizmoKit
             _gizmoCamera.pixelRect = _gizmoViewRect;
         }
 
-        static Rect TargetViewRect(Camera target)
+        public virtual Rect TargetViewRect(Camera target)
         {
             if (target.targetTexture != null)
             {
@@ -808,7 +909,7 @@ namespace SceneViewGizmoKit
             return target.pixelRect;
         }
 
-        bool TryScreenToView(Vector2 screen, out Vector2 view)
+        public virtual bool TryScreenToView(Vector2 screen, out Vector2 view)
         {
             view = screen;
             if (!_displayActive)
@@ -837,7 +938,7 @@ namespace SceneViewGizmoKit
             return true;
         }
 
-        bool ViewToLocal(Vector2 view, out Vector2 local)
+        public virtual bool ViewToLocal(Vector2 view, out Vector2 local)
         {
             local = Vector2.zero;
             RectTransform display = Display;
@@ -855,7 +956,7 @@ namespace SceneViewGizmoKit
             return true;
         }
 
-        Vector2 ViewToScreen(Vector2 view)
+        public virtual Vector2 ViewToScreen(Vector2 view)
         {
             if (!_displayActive || !ViewToLocal(view, out Vector2 local))
                 return view;
@@ -864,13 +965,13 @@ namespace SceneViewGizmoKit
             return RectTransformUtility.WorldToScreenPoint(_eventCamera, world);
         }
 
-        Vector2 ViewToGui(Vector2 view)
+        public virtual Vector2 ViewToGui(Vector2 view)
         {
             Vector2 screen = ViewToScreen(view);
             return new Vector2(screen.x, Screen.height - screen.y);
         }
 
-        Rect ViewRectToGui(Rect viewRect)
+        public virtual Rect ViewRectToGui(Rect viewRect)
         {
             Vector2 min = ViewToScreen(new Vector2(viewRect.xMin, viewRect.yMin));
             Vector2 max = ViewToScreen(new Vector2(viewRect.xMax, viewRect.yMax));
@@ -881,14 +982,14 @@ namespace SceneViewGizmoKit
             return Rect.MinMaxRect(xMin, yTop, xMax, yBottom);
         }
 
-        Vector2 ViewportToView(Vector3 viewport)
+        public virtual Vector2 ViewportToView(Vector3 viewport)
         {
             return new Vector2(
                 _gizmoViewRect.x + viewport.x * _gizmoViewRect.width,
                 _gizmoViewRect.y + viewport.y * _gizmoViewRect.height);
         }
 
-        bool TryAxisLabelPoint(int index, out Vector2 labelView)
+        public virtual bool TryAxisLabelPoint(int index, out Vector2 labelView)
         {
             labelView = Vector2.zero;
             Vector3 tip = Axes[index] * (SceneViewGizmoGeometry.CubeSize * 0.5f + SceneViewGizmoGeometry.Gap + SceneViewGizmoGeometry.ConeHeight);
@@ -902,12 +1003,12 @@ namespace SceneViewGizmoKit
             if (outward.sqrMagnitude > 1f)
                 outward.Normalize();
 
-            float nudge = Mathf.Clamp(_screenSize * 0.09f, 8f, 18f) * _viewScale * _viewPerScreen;
+            float nudge = Mathf.Clamp(ScreenSize * 0.09f, 8f, 18f) * _viewScale * _viewPerScreen;
             labelView = tipView + outward * nudge;
             return true;
         }
 
-        bool PointerBlocked(Vector2 screen)
+        public virtual bool PointerBlocked(Vector2 screen)
         {
             if (!_displayActive || EventSystem.current == null)
                 return false;
@@ -930,7 +1031,7 @@ namespace SceneViewGizmoKit
             return hit != display && !hit.IsChildOf(display);
         }
 
-        static Camera EventCamera(RectTransform display)
+        public virtual Camera EventCamera(RectTransform display)
         {
             Canvas canvas = display.GetComponentInParent<Canvas>();
             if (canvas == null)
@@ -943,7 +1044,7 @@ namespace SceneViewGizmoKit
             return root.worldCamera != null ? root.worldCamera : Camera.main;
         }
 
-        static float DisplayScreenWidth(RectTransform display, Camera eventCamera)
+        public virtual float DisplayScreenWidth(RectTransform display, Camera eventCamera)
         {
             Vector3[] corners = new Vector3[4];
             display.GetWorldCorners(corners);
@@ -952,13 +1053,13 @@ namespace SceneViewGizmoKit
             return Vector2.Distance(left, right);
         }
 
-        void HideLabels()
+        public virtual void HideLabels()
         {
             if (_labelRoot != null)
                 _labelRoot.gameObject.SetActive(false);
         }
 
-        void UpdateUiLabels()
+        public virtual void UpdateUiLabels()
         {
             if (!_displayActive)
             {
@@ -972,7 +1073,7 @@ namespace SceneViewGizmoKit
             PlaceAxisLabel(_labelY, 1);
             PlaceAxisLabel(_labelZ, 2);
 
-            bool showProjection = _showProjectionLabel;
+            bool showProjection = ShowProjectionLabel;
             _labelBack.gameObject.SetActive(showProjection);
             _labelMode.gameObject.SetActive(showProjection);
             if (!showProjection)
@@ -982,13 +1083,13 @@ namespace SceneViewGizmoKit
             bool modeHovered = _hasPointer && modeRect.Contains(_pointerView);
             Color backColor = _hasPrevious ? new Color(1f, 1f, 1f, 0.92f) : new Color(1f, 1f, 1f, 0.28f);
             if (backHovered && _hasPrevious)
-                backColor = _hoveredColor;
+                backColor = HoveredColor;
             Color modeColor = modeHovered ? Color.white : new Color(1f, 1f, 1f, 0.8f);
             PlaceText(_labelBack, backRect, "<", backColor, _projectionStyle.fontSize);
             PlaceText(_labelMode, modeRect, _boundCamera.orthographic ? "Ortho" : "Persp", modeColor, _projectionStyle.fontSize);
         }
 
-        void PlaceAxisLabel(Text text, int index)
+        public virtual void PlaceAxisLabel(Text text, int index)
         {
             if (_axisAlpha[index] < VisibleAlpha || !TryAxisLabelPoint(index, out Vector2 labelView))
             {
@@ -1005,7 +1106,7 @@ namespace SceneViewGizmoKit
             PlaceText(text, viewRect, AxisLabels[index], color, _axisStyle.fontSize);
         }
 
-        void PlaceText(Text text, Rect viewRect, string value, Color color, int screenFontSize)
+        public virtual void PlaceText(Text text, Rect viewRect, string value, Color color, int screenFontSize)
         {
             if (!ViewToLocal(viewRect.center, out Vector2 local))
             {
@@ -1036,7 +1137,7 @@ namespace SceneViewGizmoKit
             text.color = color;
         }
 
-        void EnsureLabelRoot()
+        public virtual void EnsureLabelRoot()
         {
             if (_labelRoot == null)
             {
@@ -1072,7 +1173,7 @@ namespace SceneViewGizmoKit
             _labelRoot.gameObject.SetActive(true);
         }
 
-        Text CreateLabel(string name)
+        public virtual Text CreateLabel(string name)
         {
             var labelObject = new GameObject(name);
             labelObject.hideFlags = HideFlags.DontSave;
@@ -1092,25 +1193,25 @@ namespace SceneViewGizmoKit
             return text;
         }
 
-        float LabelHeight()
+        public virtual float LabelHeight()
         {
-            if (!_showProjectionLabel)
+            if (!ShowProjectionLabel)
                 return 0f;
-            return Mathf.Clamp(_screenSize * 0.22f, 18f, 32f) * _viewScale;
+            return Mathf.Clamp(ScreenSize * 0.22f, 18f, 32f) * _viewScale;
         }
 
-        void EnsureStyles()
+        public virtual void EnsureStyles()
         {
             if (_axisStyle == null)
                 _axisStyle = CreateTextStyle();
             if (_projectionStyle == null)
                 _projectionStyle = CreateTextStyle();
 
-            _axisStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(Mathf.Clamp(_screenSize * 0.15f, 11f, 28f) * _viewScale));
-            _projectionStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(Mathf.Clamp(_screenSize * 0.13f, 11f, 22f) * _viewScale));
+            _axisStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(Mathf.Clamp(ScreenSize * 0.15f, 11f, 28f) * _viewScale));
+            _projectionStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(Mathf.Clamp(ScreenSize * 0.13f, 11f, 22f) * _viewScale));
         }
 
-        static GUIStyle CreateTextStyle()
+        public virtual GUIStyle CreateTextStyle()
         {
             var style = new GUIStyle();
             style.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
@@ -1120,7 +1221,7 @@ namespace SceneViewGizmoKit
             return style;
         }
 
-        static void DrawText(Rect rect, string text, GUIStyle style, Color color)
+        public virtual void DrawText(Rect rect, string text, GUIStyle style, Color color)
         {
             Color shadow = new Color(0f, 0f, 0f, color.a * 0.55f);
             GUI.color = shadow;
@@ -1129,18 +1230,18 @@ namespace SceneViewGizmoKit
             GUI.Label(rect, text, style);
         }
 
-        Color AxisColor(int index)
+        public virtual Color AxisColor(int index)
         {
             if (index >= 3)
-                return _negativeAxis;
+                return NegativeAxis;
             if (index == 0)
-                return _positiveX;
+                return PositiveX;
             if (index == 1)
-                return _positiveY;
-            return _positiveZ;
+                return PositiveY;
+            return PositiveZ;
         }
 
-        static Matrix4x4 AxisMatrix(Vector3 axis)
+        public virtual Matrix4x4 AxisMatrix(Vector3 axis)
         {
             Quaternion rotation = Quaternion.FromToRotation(Vector3.up, -axis);
             float outer = SceneViewGizmoGeometry.CubeSize * 0.5f + SceneViewGizmoGeometry.Gap + SceneViewGizmoGeometry.ConeHeight;
@@ -1150,10 +1251,10 @@ namespace SceneViewGizmoKit
                 new Vector3(SceneViewGizmoGeometry.ConeRadius, SceneViewGizmoGeometry.ConeHeight, SceneViewGizmoGeometry.ConeRadius));
         }
 
-        Camera ResolveCamera()
+        public virtual Camera ResolveCamera()
         {
-            if (IsSceneCamera(_targetCamera))
-                return _targetCamera;
+            if (IsSceneCamera(TargetCamera))
+                return TargetCamera;
 
             Camera attached = GetComponent<Camera>();
             if (IsSceneCamera(attached))
@@ -1165,19 +1266,19 @@ namespace SceneViewGizmoKit
             return null;
         }
 
-        bool IsSceneCamera(Camera camera)
+        public virtual bool IsSceneCamera(Camera camera)
         {
             return camera != null && camera != _gizmoCamera && camera.enabled;
         }
 
-        Vector3 PivotPoint(Camera camera)
+        public virtual Vector3 PivotPoint(Camera camera)
         {
             if (Pivot != null)
                 return Pivot.position;
-            return camera.transform.position + camera.transform.forward * Mathf.Max(0.01f, _orbitDistance);
+            return camera.transform.position + camera.transform.forward * Mathf.Max(0.01f, OrbitDistance);
         }
 
-        static Quaternion RotationLookingAlong(Transform cameraTransform, Vector3 forward)
+        public virtual Quaternion RotationLookingAlong(Transform cameraTransform, Vector3 forward)
         {
             Vector3 up = Vector3.up;
             if (Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > 0.99f)
@@ -1193,13 +1294,13 @@ namespace SceneViewGizmoKit
             return Quaternion.LookRotation(forward, up);
         }
 
-        void Remember(Camera camera)
+        public virtual void Remember(Camera camera)
         {
             _previousPose = Capture(camera);
             _hasPrevious = true;
         }
 
-        static CameraPose Capture(Camera camera)
+        public virtual CameraPose Capture(Camera camera)
         {
             return new CameraPose
             {
@@ -1211,7 +1312,7 @@ namespace SceneViewGizmoKit
             };
         }
 
-        static void ApplyPose(Camera camera, CameraPose pose)
+        public virtual void ApplyPose(Camera camera, CameraPose pose)
         {
             camera.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
             camera.orthographic = pose.Orthographic;
@@ -1219,7 +1320,7 @@ namespace SceneViewGizmoKit
             camera.fieldOfView = pose.FieldOfView;
         }
 
-        Material CreateMaterial()
+        public virtual Material CreateMaterial()
         {
             Material source = Resources.Load<Material>("SceneViewGizmoSolid");
             Material material = null;
@@ -1249,7 +1350,7 @@ namespace SceneViewGizmoKit
             return material;
         }
 
-        static float Smooth01(float t)
+        public virtual float Smooth01(float t)
         {
             t = Mathf.Clamp01(t);
             return t * t * (3f - 2f * t);
