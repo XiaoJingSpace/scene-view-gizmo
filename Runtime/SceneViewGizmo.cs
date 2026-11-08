@@ -143,7 +143,7 @@ namespace SceneViewGizmoKit
             set { _targetCamera = value; }
         }
 
-        public Transform Pivot
+        public virtual Transform Pivot
         {
             get { return _pivot; }
             set { _pivot = value; }
@@ -155,7 +155,7 @@ namespace SceneViewGizmoKit
             set { _controlCamera = value; }
         }
 
-        public RectTransform Display
+        public virtual RectTransform Display
         {
             get { return _display; }
             set { _display = value; }
@@ -223,8 +223,8 @@ namespace SceneViewGizmoKit
                 return;
             }
 
-            float distance = _pivot != null
-                ? Vector3.Distance(camera.transform.position, _pivot.position)
+            float distance = Pivot != null
+                ? Vector3.Distance(camera.transform.position, Pivot.position)
                 : Mathf.Max(0.01f, _orbitDistance);
             camera.orthographicSize = Mathf.Max(0.01f, distance * Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad));
             camera.orthographic = true;
@@ -711,7 +711,8 @@ namespace SceneViewGizmoKit
         void PrepareDisplay(Camera target)
         {
             RenderTexture texture = target.targetTexture;
-            _displayActive = _display != null && _display.gameObject.activeInHierarchy && texture != null;
+            RectTransform display = Display;
+            _displayActive = display != null && display.gameObject.activeInHierarchy && texture != null;
             _viewPerScreen = 1f;
             _uvRect = new Rect(0f, 0f, 1f, 1f);
             _eventCamera = null;
@@ -724,17 +725,17 @@ namespace SceneViewGizmoKit
             if (!_displayActive)
                 return;
 
-            RawImage image = _display.GetComponent<RawImage>();
+            RawImage image = display.GetComponent<RawImage>();
             if (image != null && image.uvRect.width > 0.0001f && image.uvRect.height > 0.0001f)
                 _uvRect = image.uvRect;
             if (image != null && image.texture != texture && !_warnedDisplayTexture)
             {
-                Debug.LogWarning("Display 上的 RawImage 没有使用目标相机的 RenderTexture，Gizmo 的点击会对不齐。", _display);
+                Debug.LogWarning("Display 上的 RawImage 没有使用目标相机的 RenderTexture，Gizmo 的点击会对不齐。", display);
                 _warnedDisplayTexture = true;
             }
 
-            _eventCamera = EventCamera(_display);
-            _displayScreenWidth = DisplayScreenWidth(_display, _eventCamera);
+            _eventCamera = EventCamera(display);
+            _displayScreenWidth = DisplayScreenWidth(display, _eventCamera);
             Rect view = TargetViewRect(target);
             if (_displayScreenWidth > 1f)
                 _viewPerScreen = view.width / _displayScreenWidth;
@@ -778,10 +779,13 @@ namespace SceneViewGizmoKit
 
             if (_uvRect.width <= 0.0001f || _uvRect.height <= 0.0001f)
                 return false;
-            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(_display, screen, _eventCamera, out Vector2 local))
+            RectTransform display = Display;
+            if (display == null)
+                return false;
+            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(display, screen, _eventCamera, out Vector2 local))
                 return false;
 
-            Rect rect = _display.rect;
+            Rect rect = display.rect;
             if (rect.width < 1f || rect.height < 1f)
                 return false;
 
@@ -799,14 +803,15 @@ namespace SceneViewGizmoKit
         bool ViewToLocal(Vector2 view, out Vector2 local)
         {
             local = Vector2.zero;
-            if (_display == null || _textureWidth < 1f || _textureHeight < 1f || _uvRect.width <= 0.0001f || _uvRect.height <= 0.0001f)
+            RectTransform display = Display;
+            if (display == null || _textureWidth < 1f || _textureHeight < 1f || _uvRect.width <= 0.0001f || _uvRect.height <= 0.0001f)
                 return false;
 
             float texU = view.x / _textureWidth;
             float texV = view.y / _textureHeight;
             float u = (texU - _uvRect.x) / _uvRect.width;
             float v = (texV - _uvRect.y) / _uvRect.height;
-            Rect rect = _display.rect;
+            Rect rect = display.rect;
             local = new Vector2(
                 Mathf.LerpUnclamped(rect.xMin, rect.xMax, u),
                 Mathf.LerpUnclamped(rect.yMin, rect.yMax, v));
@@ -818,7 +823,7 @@ namespace SceneViewGizmoKit
             if (!_displayActive || !ViewToLocal(view, out Vector2 local))
                 return view;
 
-            Vector3 world = _display.TransformPoint(new Vector3(local.x, local.y, 0f));
+            Vector3 world = Display.TransformPoint(new Vector3(local.x, local.y, 0f));
             return RectTransformUtility.WorldToScreenPoint(_eventCamera, world);
         }
 
@@ -880,11 +885,12 @@ namespace SceneViewGizmoKit
                 return false;
 
             GameObject top = _uiHits[0].gameObject;
-            if (top == null || _display == null)
+            RectTransform display = Display;
+            if (top == null || display == null)
                 return false;
 
             Transform hit = top.transform;
-            return hit != _display && !hit.IsChildOf(_display);
+            return hit != display && !hit.IsChildOf(display);
         }
 
         static Camera EventCamera(RectTransform display)
@@ -970,7 +976,14 @@ namespace SceneViewGizmoKit
                 return;
             }
 
-            float unitsPerScreen = _displayScreenWidth > 1f ? _display.rect.width / _displayScreenWidth : 1f;
+            RectTransform display = Display;
+            if (display == null)
+            {
+                text.gameObject.SetActive(false);
+                return;
+            }
+
+            float unitsPerScreen = _displayScreenWidth > 1f ? display.rect.width / _displayScreenWidth : 1f;
             float screenWidth = viewRect.width / Mathf.Max(0.0001f, _viewPerScreen);
             float screenHeight = viewRect.height / Mathf.Max(0.0001f, _viewPerScreen);
             RectTransform rect = text.rectTransform;
@@ -980,7 +993,7 @@ namespace SceneViewGizmoKit
             rect.sizeDelta = new Vector2(Mathf.Max(8f, screenWidth * unitsPerScreen), Mathf.Max(8f, screenHeight * unitsPerScreen));
             rect.localRotation = Quaternion.identity;
             rect.localScale = Vector3.one;
-            rect.position = _display.TransformPoint(new Vector3(local.x, local.y, 0f));
+            rect.position = display.TransformPoint(new Vector3(local.x, local.y, 0f));
             text.fontSize = Mathf.Clamp(Mathf.RoundToInt(screenFontSize * unitsPerScreen), 8, 72);
             text.text = value;
             text.color = color;
@@ -1002,9 +1015,13 @@ namespace SceneViewGizmoKit
                 _labelMode = CreateLabel("Mode");
             }
 
-            if (_labelRoot.parent != _display)
+            RectTransform display = Display;
+            if (display == null)
+                return;
+
+            if (_labelRoot.parent != display)
             {
-                _labelRoot.SetParent(_display, false);
+                _labelRoot.SetParent(display, false);
                 _labelRoot.anchorMin = Vector2.zero;
                 _labelRoot.anchorMax = Vector2.one;
                 _labelRoot.offsetMin = Vector2.zero;
@@ -1118,8 +1135,8 @@ namespace SceneViewGizmoKit
 
         Vector3 PivotPoint(Camera camera)
         {
-            if (_pivot != null)
-                return _pivot.position;
+            if (Pivot != null)
+                return Pivot.position;
             return camera.transform.position + camera.transform.forward * Mathf.Max(0.01f, _orbitDistance);
         }
 
