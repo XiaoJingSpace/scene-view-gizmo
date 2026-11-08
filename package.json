@@ -1,0 +1,26 @@
+{
+  "name": "com.xiaojingspace.scene-view-gizmo",
+  "version": "1.0.0",
+  "displayName": "Scene View Gizmo",
+  "author": {
+    "name": "xiaojingspace"
+  },
+  "description": "画面角落的视角坐标轴。点击色锥对齐相机，点击中心或 Persp/Ortho 切换投影。相机渲染到 RenderTexture 时，可把 UGUI 的 RawImage 设为显示区域。不依赖 Runtime Transform Gizmos。",
+  "unity": "6000.0",
+  "dependencies": {
+    "com.unity.inputsystem": "1.8.0",
+    "com.unity.ugui": "2.0.0"
+  },
+  "samples": [
+    {
+      "displayName": "UGUI 画面",
+      "description": "相机渲染到 RenderTexture，贴在 RawImage 上。只在这块画面里旋转、缩放和点击坐标轴。",
+      "path": "Samples~/UGUI"
+    }
+  ],
+  "keywords": [
+    "gizmo",
+    "camera",
+    "ugui"
+  ]
+}
