@@ -59,7 +59,7 @@ namespace SceneViewGizmoKit
 
         [Header("位置")]
         [Tooltip("相机渲染到 RenderTexture 时，指定显示这块纹理的界面，一般是 RawImage。坐标轴画进纹理，文字和点击跟这块区域对齐。留空则直接画在屏幕上。")]
-        [SerializeField] RectTransform _display;
+        public RectTransform _display;
         [SerializeField] SceneViewGizmoCorner _corner = SceneViewGizmoCorner.TopRight;
         [SerializeField, Min(48f)] float _screenSize = 108f;
         [Tooltip("相对所选角落的屏幕偏移，单位像素。Y 向上为正。")]
