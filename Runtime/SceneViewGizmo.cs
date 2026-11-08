@@ -21,6 +21,10 @@ namespace SceneViewGizmoKit
         InPlace
     }
 
+    public sealed class SceneViewGizmoLayerAttribute : PropertyAttribute
+    {
+    }
+
     /// <summary>
     /// 画面角落的视角坐标轴。点击轴对齐相机，点击中心或 Persp/Ortho 切换投影。
     /// </summary>
@@ -60,6 +64,9 @@ namespace SceneViewGizmoKit
         [Header("位置")]
         [Tooltip("相机渲染到 RenderTexture 时，指定显示这块纹理的界面，一般是 RawImage。坐标轴画进纹理，文字和点击跟这块区域对齐。留空则直接画在屏幕上。")]
         public RectTransform _display;
+        [Tooltip("生成的坐标轴模型所在 Layer。")]
+        [SceneViewGizmoLayer]
+        public int _modelLayer;
         [SerializeField] SceneViewGizmoCorner _corner = SceneViewGizmoCorner.TopRight;
         [SerializeField, Min(48f)] float _screenSize = 108f;
         [Tooltip("相对所选角落的屏幕偏移，单位像素。Y 向上为正。")]
@@ -121,6 +128,7 @@ namespace SceneViewGizmoKit
 
         bool _displayActive;
         float _viewPerScreen = 1f;
+        float _viewScale = 1f;
         float _textureWidth = 1f;
         float _textureHeight = 1f;
         float _displayScreenWidth = 1f;
@@ -256,7 +264,7 @@ namespace SceneViewGizmoKit
                 return false;
 
             Rect pixel = _gizmoViewRect;
-            float pad = 20f * _viewPerScreen;
+            float pad = 20f * _viewPerScreen * _viewScale;
             float label = LabelHeight() * _viewPerScreen;
             pixel.x -= pad;
             pixel.y -= pad + label;
@@ -404,6 +412,7 @@ namespace SceneViewGizmoKit
             _rig.transform.SetParent(transform, false);
             _gizmoCamera = _rig.AddComponent<Camera>();
             _gizmoCamera.enabled = false;
+            ApplyModelLayer();
         }
 
         bool SyncRig(Camera target)
@@ -420,6 +429,7 @@ namespace SceneViewGizmoKit
             _gizmoCamera.stereoTargetEye = StereoTargetEyeMask.None;
             _gizmoCamera.targetTexture = target.targetTexture;
             _gizmoCamera.targetDisplay = target.targetDisplay;
+            ApplyModelLayer();
             _gizmoCamera.depth = target.depth + 1f;
             _gizmoCamera.nearClipPlane = 0.05f;
             _gizmoCamera.farClipPlane = 50f;
@@ -577,7 +587,7 @@ namespace SceneViewGizmoKit
                 return -1;
             }
 
-            float pad = 8f * _viewPerScreen;
+            float pad = 8f * _viewPerScreen * _viewScale;
             Rect hit = pixel;
             hit.x -= pad;
             hit.y -= pad;
@@ -676,9 +686,9 @@ namespace SceneViewGizmoKit
 
         Rect GizmoPixelRect(Rect view)
         {
-            float size = Mathf.Clamp(_screenSize, 48f, 512f) * _viewPerScreen;
+            float size = Mathf.Clamp(_screenSize, 48f, 512f) * _viewScale * _viewPerScreen;
             size = Mathf.Min(size, Mathf.Min(view.width, view.height) * 0.85f);
-            Vector2 offset = _screenOffset * _viewPerScreen;
+            Vector2 offset = _screenOffset * _viewScale * _viewPerScreen;
             bool bottom = _corner == SceneViewGizmoCorner.BottomLeft || _corner == SceneViewGizmoCorner.BottomRight;
             float lift = bottom ? LabelHeight() * _viewPerScreen : 0f;
             float x;
@@ -714,6 +724,7 @@ namespace SceneViewGizmoKit
             RectTransform display = Display;
             _displayActive = display != null && display.gameObject.activeInHierarchy && texture != null;
             _viewPerScreen = 1f;
+            _viewScale = 1f;
             _uvRect = new Rect(0f, 0f, 1f, 1f);
             _eventCamera = null;
             if (texture != null)
@@ -739,6 +750,32 @@ namespace SceneViewGizmoKit
             Rect view = TargetViewRect(target);
             if (_displayScreenWidth > 1f)
                 _viewPerScreen = view.width / _displayScreenWidth;
+            _viewScale = ViewScale(display);
+        }
+
+        static float ViewScale(RectTransform display)
+        {
+            Canvas canvas = display.GetComponentInParent<Canvas>();
+            Transform root = canvas != null && canvas.rootCanvas != null ? canvas.rootCanvas.transform : null;
+            float canvasScale = 1f;
+            if (root != null)
+                canvasScale = DominantScale(root.lossyScale);
+            return Mathf.Max(0.01f, DominantScale(display.lossyScale) / canvasScale);
+        }
+
+        static float DominantScale(Vector3 scale)
+        {
+            return Mathf.Max(0.0001f, Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y)));
+        }
+
+        void ApplyModelLayer()
+        {
+            if (_rig == null)
+                return;
+
+            int layer = Mathf.Clamp(_modelLayer, 0, 31);
+            if (_rig.layer != layer)
+                _rig.layer = layer;
         }
 
         void ApplyGizmoViewport(Camera target)
@@ -865,7 +902,7 @@ namespace SceneViewGizmoKit
             if (outward.sqrMagnitude > 1f)
                 outward.Normalize();
 
-            float nudge = Mathf.Clamp(_screenSize * 0.09f, 8f, 18f) * _viewPerScreen;
+            float nudge = Mathf.Clamp(_screenSize * 0.09f, 8f, 18f) * _viewScale * _viewPerScreen;
             labelView = tipView + outward * nudge;
             return true;
         }
@@ -1059,7 +1096,7 @@ namespace SceneViewGizmoKit
         {
             if (!_showProjectionLabel)
                 return 0f;
-            return Mathf.Clamp(_screenSize * 0.22f, 18f, 32f);
+            return Mathf.Clamp(_screenSize * 0.22f, 18f, 32f) * _viewScale;
         }
 
         void EnsureStyles()
@@ -1069,8 +1106,8 @@ namespace SceneViewGizmoKit
             if (_projectionStyle == null)
                 _projectionStyle = CreateTextStyle();
 
-            _axisStyle.fontSize = Mathf.Clamp(Mathf.RoundToInt(_screenSize * 0.15f), 11, 28);
-            _projectionStyle.fontSize = Mathf.Clamp(Mathf.RoundToInt(_screenSize * 0.13f), 11, 22);
+            _axisStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(Mathf.Clamp(_screenSize * 0.15f, 11f, 28f) * _viewScale));
+            _projectionStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(Mathf.Clamp(_screenSize * 0.13f, 11f, 22f) * _viewScale));
         }
 
         static GUIStyle CreateTextStyle()
