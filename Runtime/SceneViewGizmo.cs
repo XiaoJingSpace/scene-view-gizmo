@@ -100,6 +100,8 @@ namespace SceneViewGizmoKit
         GameObject _rig;
         Camera _gizmoCamera;
         Material _material;
+        Material _blitMaterial;
+        RenderTexture _modelTexture;
         MaterialPropertyBlock _colorBlock;
         Camera _boundCamera;
         bool _warnedMissingCamera;
@@ -381,6 +383,9 @@ namespace SceneViewGizmoKit
         {
             if (_material != null)
                 Destroy(_material);
+            if (_blitMaterial != null)
+                Destroy(_blitMaterial);
+            ReleaseModelTexture();
             if (_rig != null)
                 Destroy(_rig);
             if (_labelRoot != null)
@@ -429,7 +434,11 @@ namespace SceneViewGizmoKit
 
         public virtual void OnRenderObject()
         {
-            if (CullingMask.value != 0 || _gizmoCamera == null || Camera.current != _gizmoCamera || _material == null)
+            if (_gizmoCamera == null || Camera.current != _gizmoCamera || _material == null)
+                return;
+
+            bool modelTexture = _modelTexture != null && _gizmoCamera.targetTexture == _modelTexture;
+            if (!modelTexture && CullingMask.value != 0)
                 return;
 
             for (int i = 0; i < _draws.Count; i++)
@@ -441,6 +450,12 @@ namespace SceneViewGizmoKit
                 _material.SetColor("_Color", draw.Color);
                 if (_material.SetPass(0))
                     Graphics.DrawMeshNow(draw.Mesh, draw.Matrix);
+            }
+
+            if (modelTexture)
+            {
+                GL.Flush();
+                CompositeModel();
             }
         }
 
@@ -460,7 +475,7 @@ namespace SceneViewGizmoKit
 
         public virtual bool PollPointer()
         {
-            Pointer pointer = Pointer.current;
+            Pointer pointer = Pointer.current != null ? Pointer.current : Mouse.current;
             if (pointer == null)
             {
                 _hasPointer = false;
@@ -489,7 +504,7 @@ namespace SceneViewGizmoKit
                 return;
 
             _rig = new GameObject("Scene View Gizmo Camera");
-            _rig.hideFlags = HideFlags.HideAndDontSave;
+            //_rig.hideFlags = HideFlags.HideAndDontSave;
             _rig.transform.SetParent(transform, false);
             _gizmoCamera = _rig.AddComponent<Camera>();
             _gizmoCamera.enabled = false;
@@ -680,7 +695,7 @@ namespace SceneViewGizmoKit
 
             float vx = (viewPosition.x - pixel.xMin) / pixel.width;
             float vy = (viewPosition.y - pixel.yMin) / pixel.height;
-            Ray ray = _gizmoCamera.ViewportPointToRay(new Vector3(vx, vy, 0f));
+            Ray ray = GizmoRay(vx, vy);
             float best = float.PositiveInfinity;
             int bestPart = -1;
             for (int i = 0; i < Axes.Length; i++)
@@ -704,6 +719,25 @@ namespace SceneViewGizmoKit
 
             _hoveredPart = bestPart;
             return bestPart;
+        }
+
+        public virtual Ray GizmoRay(float viewportX, float viewportY)
+        {
+            Transform xform = _gizmoCamera.transform;
+            float nx = (viewportX - 0.5f) * 2f;
+            float ny = (viewportY - 0.5f) * 2f;
+            if (_gizmoCamera.orthographic)
+            {
+                float half = _gizmoCamera.orthographicSize;
+                float aspect = Mathf.Max(0.01f, _gizmoCamera.aspect);
+                Vector3 origin = xform.position + xform.right * (nx * half * aspect) + xform.up * (ny * half);
+                return new Ray(origin, xform.forward);
+            }
+
+            float tan = Mathf.Tan(_gizmoCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            float perspectiveAspect = Mathf.Max(0.01f, _gizmoCamera.aspect);
+            Vector3 direction = xform.forward + xform.right * (nx * tan * perspectiveAspect) + xform.up * (ny * tan);
+            return new Ray(xform.position, direction.normalized);
         }
 
         public virtual void DrawLabels(Vector2 viewPointer, Rect backRect, Rect modeRect)
@@ -849,7 +883,7 @@ namespace SceneViewGizmoKit
 
         public virtual void SubmitMaskedModel()
         {
-            if (CullingMask.value == 0 || _gizmoCamera == null || !_gizmoCamera.enabled || _material == null)
+            if (CullingMask.value == 0 || _gizmoCamera == null || !_gizmoCamera.enabled || _material == null || _gizmoCamera.targetTexture != null)
                 return;
 
             if (_colorBlock == null)
@@ -883,17 +917,85 @@ namespace SceneViewGizmoKit
         {
             if (target.targetTexture != null)
             {
-                float width = target.targetTexture.width;
-                float height = target.targetTexture.height;
-                _gizmoCamera.rect = new Rect(
-                    _gizmoViewRect.x / width,
-                    _gizmoViewRect.y / height,
-                    _gizmoViewRect.width / width,
-                    _gizmoViewRect.height / height);
+                int width = Mathf.Max(2, Mathf.CeilToInt(_gizmoViewRect.width));
+                int height = Mathf.Max(2, Mathf.CeilToInt(_gizmoViewRect.height));
+                EnsureModelTexture(width, height);
+                _gizmoCamera.targetTexture = _modelTexture;
+                _gizmoCamera.rect = new Rect(0f, 0f, 1f, 1f);
+                _gizmoCamera.clearFlags = CameraClearFlags.SolidColor;
+                _gizmoCamera.backgroundColor = new Color(0f, 0f, 0f, 0f);
                 return;
             }
 
+            ReleaseModelTexture();
+            _gizmoCamera.targetTexture = null;
+            _gizmoCamera.clearFlags = CameraClearFlags.Depth;
             _gizmoCamera.pixelRect = _gizmoViewRect;
+        }
+
+        public virtual void EnsureModelTexture(int width, int height)
+        {
+            if (_modelTexture != null && _modelTexture.width == width && _modelTexture.height == height)
+                return;
+
+            ReleaseModelTexture();
+            _modelTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+            _modelTexture.name = "Scene View Gizmo Model";
+            _modelTexture.filterMode = FilterMode.Bilinear;
+            _modelTexture.wrapMode = TextureWrapMode.Clamp;
+            _modelTexture.hideFlags = HideFlags.HideAndDontSave;
+            _modelTexture.Create();
+        }
+
+        public virtual void ReleaseModelTexture()
+        {
+            if (_modelTexture == null)
+                return;
+
+            _modelTexture.Release();
+            Destroy(_modelTexture);
+            _modelTexture = null;
+        }
+
+        public virtual void CompositeModel()
+        {
+            RenderTexture destination = _boundCamera != null ? _boundCamera.targetTexture : null;
+            if (destination == null || _modelTexture == null)
+                return;
+
+            if (_blitMaterial == null)
+                _blitMaterial = CreateBlitMaterial();
+            if (_blitMaterial == null)
+                return;
+
+            Rect corner = new Rect(
+                _gizmoViewRect.x,
+                destination.height - _gizmoViewRect.y - _gizmoViewRect.height,
+                _gizmoViewRect.width,
+                _gizmoViewRect.height);
+            RenderTexture previous = RenderTexture.active;
+            Graphics.SetRenderTarget(destination);
+            GL.PushMatrix();
+            GL.LoadPixelMatrix(0f, destination.width, destination.height, 0f);
+            Graphics.DrawTexture(corner, _modelTexture, _blitMaterial);
+            GL.PopMatrix();
+            Graphics.SetRenderTarget(previous != null ? previous : _modelTexture);
+        }
+
+        public virtual Material CreateBlitMaterial()
+        {
+            Shader shader = Shader.Find("Hidden/SceneViewGizmo/Blit");
+            if (shader == null)
+                shader = Resources.Load<Shader>("SceneViewGizmoBlit");
+            if (shader == null)
+                shader = Shader.Find("Sprites/Default");
+            if (shader == null)
+                return null;
+
+            Material material = new Material(shader);
+            material.hideFlags = HideFlags.HideAndDontSave;
+            material.color = Color.white;
+            return material;
         }
 
         public virtual Rect TargetViewRect(Camera target)
@@ -1022,13 +1124,24 @@ namespace SceneViewGizmoKit
             if (_uiHits.Count == 0)
                 return false;
 
-            GameObject top = _uiHits[0].gameObject;
             RectTransform display = Display;
-            if (top == null || display == null)
+            if (display == null)
                 return false;
 
-            Transform hit = top.transform;
-            return hit != display && !hit.IsChildOf(display);
+            for (int i = 0; i < _uiHits.Count; i++)
+            {
+                GameObject top = _uiHits[i].gameObject;
+                if (top == null)
+                    continue;
+
+                Transform hit = top.transform;
+                if (hit == display || hit.IsChildOf(display) || display.IsChildOf(hit))
+                    return false;
+
+                return true;
+            }
+
+            return false;
         }
 
         public virtual Camera EventCamera(RectTransform display)
